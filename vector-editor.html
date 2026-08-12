@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Basic Vector Graphic Editor</title>
+  <style>
+    :root {
+      --bg: #1a1b1e;
+      --panel: #25262b;
+      --border: #373a40;
+      --text: #e9ecef;
+      --accent: #4dabf7;
+      --accent-hover: #339af0;
+      --danger: #fa5252;
+      --success: #51cf66;
+      --muted: #868e96;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+
+    h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-right: 8px;
+      white-space: nowrap;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .tool-group {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 8px;
+      border-right: 1px solid var(--border);
+    }
+
+    .tool-group:last-child {
+      border-right: none;
+    }
+
+    button, .btn {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: background 0.15s, border-color 0.15s;
+      user-select: none;
+    }
+
+    button:hover, .btn:hover {
+      background: #2c2e33;
+      border-color: #495057;
+    }
+
+    button.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    button:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    button.danger:hover {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: #fff;
+    }
+
+    label {
+      font-size: 0.8rem;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    input[type="color"] {
+      width: 28px;
+      height: 28px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    input[type="number"], input[type="text"] {
+      background: #1a1b1e;
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 4px 8px;
+      border-radius: 4px;
+      width: 60px;
+      font-size: 0.85rem;
+    }
+
+    input[type="range"] {
+      width: 80px;
+      accent-color: var(--accent);
+    }
+
+    #workspace {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+      position: relative;
+    }
+
+    #canvas-container {
+      flex: 1;
+      overflow: auto;
+      background:
+        linear-gradient(45deg, #2c2e33 25%, transparent 25%),
+        linear-gradient(-45deg, #2c2e33 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #2c2e33 75%),
+        linear-gradient(-45deg, transparent 75%, #2c2e33 75%);
+      background-size: 20px 20px;
+      background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+      background-color: #1e1f23;
+      position: relative;
+      cursor: crosshair;
+    }
+
+    #svg-root {
+      display: block;
+      background: #fff;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      margin: 40px auto;
+      touch-action: none;
+    }
+
+    /* Selection handles */
+    .handle {
+      fill: var(--accent);
+      stroke: #fff;
+      stroke-width: 1.5;
+      cursor: pointer;
+    }
+
+    .selection-box {
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 1.5;
+      stroke-dasharray: 4 2;
+      pointer-events: none;
+    }
+
+    /* Sidebar for selected object properties */
+    #props-panel {
+      width: 220px;
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      padding: 16px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+    }
+
+    #props-panel.visible {
+      display: flex;
+    }
+
+    #props-panel h3 {
+      font-size: 0.9rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .prop-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .prop-row label {
+      font-size: 0.75rem;
+    }
+
+    footer {
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+      padding: 6px 16px;
+      font-size: 0.75rem;
+      color: var(--muted);
+      display: flex;
+      justify-content: space-between;
+    }
+
+    /* Tooltip-ish */
+    [title] {
+      position: relative;
+    }
+
+    /* Modal for text */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 20px;
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .modal h3 {
+      font-size: 1rem;
+    }
+
+    .modal input[type="text"] {
+      width: 100%;
+      padding: 8px 10px;
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .status {
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Vector Editor</h1>
+    <div class="toolbar">
+      <div class="tool-group">
+        <button id="tool-select" class="active" title="Select / Move (V)">↖ Select</button>
+        <button id="tool-rect" title="Rectangle (R)">▭ Rect</button>
+        <button id="tool-ellipse" title="Ellipse (E)">◯ Ellipse</button>
+        <button id="tool-line" title="Line (L)">／ Line</button>
+        <button id="tool-path" title="Freehand Path (P)">✎ Path</button>
+        <button id="tool-text" title="Text (T)">T Text</button>
+      </div>
+      <div class="tool-group">
+        <label>Fill <input type="color" id="fill-color" value="#4dabf7" /></label>
+        <label>Stroke <input type="color" id="stroke-color" value="#1a1b1e" /></label>
+        <label>Width <input type="number" id="stroke-width" value="2" min="0" max="40" step="0.5" /></label>
+      </div>
+      <div class="tool-group">
+        <button id="btn-delete" title="Delete selected (Del)">🗑 Delete</button>
+        <button id="btn-bring-front" title="Bring to front">↑ Front</button>
+        <button id="btn-send-back" title="Send to back">↓ Back</button>
+      </div>
+      <div class="tool-group">
+        <button id="btn-clear" class="danger" title="Clear canvas">Clear</button>
+        <button id="btn-export" title="Download SVG">⬇ Export SVG</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="workspace">
+    <div id="canvas-container">
+      <svg id="svg-root" width="900" height="600" xmlns="http://www.w3.org/2000/svg">
+        <!-- shapes go here -->
+      </svg>
+    </div>
+    <aside id="props-panel">
+      <h3>Selected Object</h3>
+      <div class="prop-row">
+        <label>Fill</label>
+        <input type="color" id="prop-fill" />
+      </div>
+      <div class="prop-row">
+        <label>Stroke</label>
+        <input type="color" id="prop-stroke" />
+      </div>
+      <div class="prop-row">
+        <label>Stroke Width</label>
+        <input type="number" id="prop-stroke-width" min="0" max="40" step="0.5" />
+      </div>
+      <div class="prop-row" id="prop-text-row" style="display:none">
+        <label>Text Content</label>
+        <input type="text" id="prop-text" />
+      </div>
+      <div class="prop-row">
+        <label>Opacity</label>
+        <input type="range" id="prop-opacity" min="0" max="1" step="0.05" value="1" />
+      </div>
+    </aside>
+  </div>
+
+  <footer>
+    <span class="status" id="status">Ready — Select a tool and draw on the canvas</span>
+    <span>Shortcuts: V Select · R Rect · E Ellipse · L Line · P Path · T Text · Del Delete</span>
+  </footer>
+
+  <!-- Text input modal -->
+  <div class="modal-overlay" id="text-modal">
+    <div class="modal">
+      <h3>Enter text</h3>
+      <input type="text" id="text-input" placeholder="Your text here..." autofocus />
+      <div class="modal-actions">
+        <button id="text-cancel">Cancel</button>
+        <button id="text-ok" class="active">OK</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ========== State ==========
+    const svg = document.getElementById('svg-root');
+    const container = document.getElementById('canvas-container');
+    const propsPanel = document.getElementById('props-panel');
+    const statusEl = document.getElementById('status');
+
+    let currentTool = 'select';
+    let isDrawing = false;
+    let startX = 0, startY = 0;
+    let currentShape = null;
+    let selected = null;
+    let selectionBox = null;
+    let handles = [];
+    let dragOffsetX = 0, dragOffsetY = 0;
+    let isDragging = false;
+    let pathPoints = [];
+    let pendingTextPos = null;
+
+    // ========== Helpers ==========
+    function setStatus(msg) {
+      statusEl.textContent = msg;
+    }
+
+    function getSVGPoint(evt) {
+      const pt = svg.createSVGPoint();
+      pt.x = evt.clientX;
+      pt.y = evt.clientY;
+      const ctm = svg.getScreenCTM().inverse();
+      return pt.matrixTransform(ctm);
+    }
+
+    function createShape(tag, attrs = {}) {
+      const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+      for (const [k, v] of Object.entries(attrs)) {
+        el.setAttribute(k, v);
+      }
+      return el;
+    }
+
+    function applyStyle(el) {
+      const fill = document.getElementById('fill-color').value;
+      const stroke = document.getElementById('stroke-color').value;
+      const sw = document.getElementById('stroke-width').value;
+      el.setAttribute('fill', fill);
+      el.setAttribute('stroke', stroke);
+      el.setAttribute('stroke-width', sw);
+      el.setAttribute('opacity', '1');
+    }
+
+    function clearSelection() {
+      selected = null;
+      if (selectionBox) {
+        selectionBox.remove();
+        selectionBox = null;
+      }
+      handles.forEach(h => h.remove());
+      handles = [];
+      propsPanel.classList.remove('visible');
+    }
+
+    function updateSelectionBox() {
+      if (!selected) return;
+      const bbox = selected.getBBox();
+      if (!selectionBox) {
+        selectionBox = createShape('rect', {
+          class: 'selection-box',
+          'pointer-events': 'none'
+        });
+        svg.appendChild(selectionBox);
+      }
+      selectionBox.setAttribute('x', bbox.x - 2);
+      selectionBox.setAttribute('y', bbox.y - 2);
+      selectionBox.setAttribute('width', bbox.width + 4);
+      selectionBox.setAttribute('height', bbox.height + 4);
+
+      // Simple corner handles (visual only for now)
+      handles.forEach(h => h.remove());
+      handles = [];
+      const corners = [
+        [bbox.x, bbox.y],
+        [bbox.x + bbox.width, bbox.y],
+        [bbox.x, bbox.y + bbox.height],
+        [bbox.x + bbox.width, bbox.y + bbox.height]
+      ];
+      corners.forEach(([cx, cy]) => {
+        const h = createShape('circle', {
+          class: 'handle',
+          cx, cy, r: 5
+        });
+        svg.appendChild(h);
+        handles.push(h);
+      });
+    }
+
+    function selectShape(el) {
+      clearSelection();
+      selected = el;
+      updateSelectionBox();
+      showProps(el);
+    }
+
+    function showProps(el) {
+      propsPanel.classList.add('visible');
+      document.getElementById('prop-fill').value = el.getAttribute('fill') || '#000000';
+      document.getElementById('prop-stroke').value = el.getAttribute('stroke') || '#000000';
+      document.getElementById('prop-stroke-width').value = el.getAttribute('stroke-width') || 2;
+      document.getElementById('prop-opacity').value = el.getAttribute('opacity') || 1;
+
+      const textRow = document.getElementById('prop-text-row');
+      if (el.tagName === 'text') {
+        textRow.style.display = 'flex';
+        document.getElementById('prop-text').value = el.textContent || '';
+      } else {
+        textRow.style.display = 'none';
+      }
+    }
+
+    // ========== Tool buttons ==========
+    const tools = ['select', 'rect', 'ellipse', 'line', 'path', 'text'];
+    tools.forEach(t => {
+      document.getElementById(`tool-${t}`).addEventListener('click', () => {
+        setTool(t);
+      });
+    });
+
+    function setTool(t) {
+      currentTool = t;
+      tools.forEach(name => {
+        document.getElementById(`tool-${name}`).classList.toggle('active', name === t);
+      });
+      container.style.cursor = t === 'select' ? 'default' : 'crosshair';
+      if (t !== 'select') clearSelection();
+      setStatus(`Tool: ${t.charAt(0).toUpperCase() + t.slice(1)}`);
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.target.tagName === 'INPUT') return;
+      const map = { v: 'select', r: 'rect', e: 'ellipse', l: 'line', p: 'path', t: 'text' };
+      if (map[e.key.toLowerCase()]) {
+        setTool(map[e.key.toLowerCase()]);
+      }
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        deleteSelected();
+      }
+      if (e.key === 'Escape') {
+        clearSelection();
+        if (isDrawing) {
+          if (currentShape) currentShape.remove();
+          isDrawing = false;
+          currentShape = null;
+        }
+      }
+    });
+
+    // ========== Drawing ==========
+    svg.addEventListener('mousedown', onPointerDown);
+    svg.addEventListener('mousemove', onPointerMove);
+    svg.addEventListener('mouseup', onPointerUp);
+    svg.addEventListener('mouseleave', onPointerUp);
+
+    // Touch support
+    svg.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      onPointerDown({ clientX: touch.clientX, clientY: touch.clientY, target: e.target });
+    }, { passive: false });
+    svg.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      const touch = e.touches[0];
+      onPointerMove({ clientX: touch.clientX, clientY: touch.clientY });
+    }, { passive: false });
+    svg.addEventListener('touchend', onPointerUp);
+
+    function onPointerDown(evt) {
+      const pt = getSVGPoint(evt);
+      startX = pt.x;
+      startY = pt.y;
+
+      if (currentTool === 'select') {
+        // Hit test: walk children in reverse (top-most first)
+        const shapes = Array.from(svg.children).filter(c =>
+          !c.classList.contains('selection-box') && !c.classList.contains('handle')
+        );
+        let hit = null;
+        for (let i = shapes.length - 1; i >= 0; i--) {
+          if (shapes[i].contains && shapes[i].contains(evt.target)) {
+            hit = shapes[i];
+            break;
+          }
+          // Fallback for some elements
+          try {
+            if (shapes[i] === evt.target || shapes[i].contains(evt.target)) {
+              hit = shapes[i];
+              break;
+            }
+          } catch (_) {}
+        }
+        // Better hit test using elementsFromPoint
+        const els = document.elementsFromPoint(evt.clientX, evt.clientY);
+        for (const el of els) {
+          if (el !== svg && el.parentNode === svg &&
+              !el.classList.contains('selection-box') &&
+              !el.classList.contains('handle')) {
+            hit = el;
+            break;
+          }
+        }
+
+        if (hit) {
+          selectShape(hit);
+          isDragging = true;
+          const bbox = hit.getBBox();
+          // For text / shapes we store current translate or position
+          dragOffsetX = pt.x;
+          dragOffsetY = pt.y;
+          // Store original position data
+          selected._origX = pt.x;
+          selected._origY = pt.y;
+          selected._startTransform = selected.getAttribute('transform') || '';
+          selected._startAttrs = {};
+          ['x','y','cx','cy','x1','y1','x2','y2'].forEach(a => {
+            if (selected.hasAttribute(a)) selected._startAttrs[a] = parseFloat(selected.getAttribute(a));
+          });
+          if (selected.tagName === 'path') {
+            selected._startD = selected.getAttribute('d');
+          }
+        } else {
+          clearSelection();
+        }
+        return;
+      }
+
+      if (currentTool === 'text') {
+        pendingTextPos = { x: pt.x, y: pt.y };
+        document.getElementById('text-modal').classList.add('open');
+        document.getElementById('text-input').value = '';
+        document.getElementById('text-input').focus();
+        return;
+      }
+
+      isDrawing = true;
+      const fill = document.getElementById('fill-color').value;
+      const stroke = document.getElementById('stroke-color').value;
+      const sw = document.getElementById('stroke-width').value;
+
+      if (currentTool === 'rect') {
+        currentShape = createShape('rect', {
+          x: startX, y: startY, width: 0, height: 0,
+          fill, stroke, 'stroke-width': sw
+        });
+      } else if (currentTool === 'ellipse') {
+        currentShape = createShape('ellipse', {
+          cx: startX, cy: startY, rx: 0, ry: 0,
+          fill, stroke, 'stroke-width': sw
+        });
+      } else if (currentTool === 'line') {
+        currentShape = createShape('line', {
+          x1: startX, y1: startY, x2: startX, y2: startY,
+          fill: 'none', stroke, 'stroke-width': sw
+        });
+      } else if (currentTool === 'path') {
+        pathPoints = [[startX, startY]];
+        currentShape = createShape('path', {
+          d: `M ${startX} ${startY}`,
+          fill: 'none', stroke, 'stroke-width': sw,
+          'stroke-linecap': 'round', 'stroke-linejoin': 'round'
+        });
+      }
+
+      if (currentShape) {
+        svg.appendChild(currentShape);
+      }
+    }
+
+    function onPointerMove(evt) {
+      const pt = getSVGPoint(evt);
+
+      if (isDragging && selected) {
+        const dx = pt.x - selected._origX;
+        const dy = pt.y - selected._origY;
+        moveSelected(dx, dy);
+        updateSelectionBox();
+        return;
+      }
+
+      if (!isDrawing || !currentShape) return;
+
+      if (currentTool === 'rect') {
+        const x = Math.min(startX, pt.x);
+        const y = Math.min(startY, pt.y);
+        const w = Math.abs(pt.x - startX);
+        const h = Math.abs(pt.y - startY);
+        currentShape.setAttribute('x', x);
+        currentShape.setAttribute('y', y);
+        currentShape.setAttribute('width', w);
+        currentShape.setAttribute('height', h);
+      } else if (currentTool === 'ellipse') {
+        const rx = Math.abs(pt.x - startX) / 2;
+        const ry = Math.abs(pt.y - startY) / 2;
+        const cx = (startX + pt.x) / 2;
+        const cy = (startY + pt.y) / 2;
+        currentShape.setAttribute('cx', cx);
+        currentShape.setAttribute('cy', cy);
+        currentShape.setAttribute('rx', rx);
+        currentShape.setAttribute('ry', ry);
+      } else if (currentTool === 'line') {
+        currentShape.setAttribute('x2', pt.x);
+        currentShape.setAttribute('y2', pt.y);
+      } else if (currentTool === 'path') {
+        pathPoints.push([pt.x, pt.y]);
+        // Simple smoothing: just append L
+        const d = currentShape.getAttribute('d') + ` L ${pt.x} ${pt.y}`;
+        currentShape.setAttribute('d', d);
+      }
+    }
+
+    function onPointerUp() {
+      if (isDragging) {
+        isDragging = false;
+        if (selected) {
+          // Clean temporary props
+          delete selected._origX;
+          delete selected._origY;
+          delete selected._startAttrs;
+          delete selected._startD;
+          delete selected._startTransform;
+        }
+      }
+      if (isDrawing) {
+        isDrawing = false;
+        // Remove zero-size shapes
+        if (currentShape) {
+          const bbox = currentShape.getBBox();
+          if (bbox.width < 1 && bbox.height < 1 && currentTool !== 'line' && currentTool !== 'path') {
+            currentShape.remove();
+          } else if (currentTool === 'line') {
+            const x1 = parseFloat(currentShape.getAttribute('x1'));
+            const y1 = parseFloat(currentShape.getAttribute('y1'));
+            const x2 = parseFloat(currentShape.getAttribute('x2'));
+            const y2 = parseFloat(currentShape.getAttribute('y2'));
+            if (Math.hypot(x2 - x1, y2 - y1) < 2) currentShape.remove();
+          }
+        }
+        currentShape = null;
+        pathPoints = [];
+      }
+    }
+
+    function moveSelected(dx, dy) {
+      if (!selected) return;
+      const tag = selected.tagName;
+
+      if (tag === 'rect' || tag === 'text') {
+        const ox = selected._startAttrs.x ?? 0;
+        const oy = selected._startAttrs.y ?? 0;
+        selected.setAttribute('x', ox + dx);
+        selected.setAttribute('y', oy + dy);
+      } else if (tag === 'ellipse') {
+        selected.setAttribute('cx', selected._startAttrs.cx + dx);
+        selected.setAttribute('cy', selected._startAttrs.cy + dy);
+      } else if (tag === 'line') {
+        selected.setAttribute('x1', selected._startAttrs.x1 + dx);
+        selected.setAttribute('y1', selected._startAttrs.y1 + dy);
+        selected.setAttribute('x2', selected._startAttrs.x2 + dx);
+        selected.setAttribute('y2', selected._startAttrs.y2 + dy);
+      } else if (tag === 'path') {
+        // Translate the path by rewriting d
+        // Simple approach: use transform
+        selected.setAttribute('transform', `translate(${dx},${dy})`);
+      }
+    }
+
+    // ========== Properties panel ==========
+    document.getElementById('prop-fill').addEventListener('input', (e) => {
+      if (selected) selected.setAttribute('fill', e.target.value);
+    });
+    document.getElementById('prop-stroke').addEventListener('input', (e) => {
+      if (selected) selected.setAttribute('stroke', e.target.value);
+    });
+    document.getElementById('prop-stroke-width').addEventListener('input', (e) => {
+      if (selected) selected.setAttribute('stroke-width', e.target.value);
+    });
+    document.getElementById('prop-opacity').addEventListener('input', (e) => {
+      if (selected) selected.setAttribute('opacity', e.target.value);
+    });
+    document.getElementById('prop-text').addEventListener('input', (e) => {
+      if (selected && selected.tagName === 'text') {
+        selected.textContent = e.target.value;
+        updateSelectionBox();
+      }
+    });
+
+    // ========== Actions ==========
+    function deleteSelected() {
+      if (selected) {
+        selected.remove();
+        clearSelection();
+        setStatus('Deleted selected object');
+      }
+    }
+    document.getElementById('btn-delete').addEventListener('click', deleteSelected);
+
+    document.getElementById('btn-bring-front').addEventListener('click', () => {
+      if (selected) {
+        svg.appendChild(selected);
+        updateSelectionBox();
+        setStatus('Brought to front');
+      }
+    });
+
+    document.getElementById('btn-send-back').addEventListener('click', () => {
+      if (selected) {
+        svg.insertBefore(selected, svg.firstChild);
+        updateSelectionBox();
+        setStatus('Sent to back');
+      }
+    });
+
+    document.getElementById('btn-clear').addEventListener('click', () => {
+      if (confirm('Clear the entire canvas?')) {
+        // Remove all shapes, keep selection helpers out
+        Array.from(svg.children).forEach(c => {
+          if (!c.classList.contains('selection-box') && !c.classList.contains('handle')) {
+            c.remove();
+          }
+        });
+        clearSelection();
+        setStatus('Canvas cleared');
+      }
+    });
+
+    document.getElementById('btn-export').addEventListener('click', () => {
+      // Clone SVG without selection UI
+      const clone = svg.cloneNode(true);
+      clone.querySelectorAll('.selection-box, .handle').forEach(el => el.remove());
+      // Ensure white background
+      clone.style.background = '#ffffff';
+      const serializer = new XMLSerializer();
+      let source = serializer.serializeToString(clone);
+      // Add XML declaration and namespace if missing
+      if (!source.startsWith('<?xml')) {
+        source = '<?xml version="1.0" standalone="no"?>\n' + source;
+      }
+      const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'drawing.svg';
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus('Exported as drawing.svg');
+    });
+
+    // ========== Text modal ==========
+    document.getElementById('text-ok').addEventListener('click', () => {
+      const text = document.getElementById('text-input').value.trim();
+      document.getElementById('text-modal').classList.remove('open');
+      if (text && pendingTextPos) {
+        const el = createShape('text', {
+          x: pendingTextPos.x,
+          y: pendingTextPos.y,
+          fill: document.getElementById('fill-color').value,
+          stroke: 'none',
+          'font-size': '24',
+          'font-family': 'sans-serif'
+        });
+        el.textContent = text;
+        svg.appendChild(el);
+        selectShape(el);
+      }
+      pendingTextPos = null;
+    });
+
+    document.getElementById('text-cancel').addEventListener('click', () => {
+      document.getElementById('text-modal').classList.remove('open');
+      pendingTextPos = null;
+    });
+
+    document.getElementById('text-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('text-ok').click();
+      if (e.key === 'Escape') document.getElementById('text-cancel').click();
+    });
+
+    // Initial status
+    setStatus('Ready — Select a tool and draw on the canvas');
+  </script>
+</body>
+</html>
