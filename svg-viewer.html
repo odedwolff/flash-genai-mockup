@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SVG Viewer</title>
+<style>
+  :root {
+    --bg: #f3f4f6;
+    --panel: #ffffff;
+    --text: #1f2937;
+    --muted: #6b7280;
+    --line: #d1d5db;
+    --accent: #2563eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111827;
+      --panel: #1f2937;
+      --text: #f3f4f6;
+      --muted: #9ca3af;
+      --line: #374151;
+      --accent: #60a5fa;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  button, label.btn {
+    font: inherit;
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: var(--panel);
+    color: var(--text);
+    cursor: pointer;
+  }
+  button:hover, label.btn:hover { border-color: var(--accent); }
+  button:focus-visible, label.btn:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
+  label.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  #name { color: var(--muted); font-size: 14px; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40ch; }
+  #stage {
+    flex: 1;
+    min-height: 0;
+    margin: 16px;
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    background-color: var(--panel);
+    position: relative;
+  }
+  #stage.drag { border-color: var(--accent); }
+  #stage.checker {
+    background-image:
+      linear-gradient(45deg, rgba(128,128,128,.15) 25%, transparent 25%, transparent 75%, rgba(128,128,128,.15) 75%),
+      linear-gradient(45deg, rgba(128,128,128,.15) 25%, transparent 25%, transparent 75%, rgba(128,128,128,.15) 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 10px 10px;
+  }
+  #hint { color: var(--muted); text-align: center; padding: 24px; }
+  #view { transform-origin: center; }
+  #view img { display: block; max-width: 100%; max-height: 100%; }
+  #err { color: #dc2626; padding: 0 16px 12px; min-height: 1em; font-size: 14px; }
+</style>
+</head>
+<body>
+<header>
+  <label class="btn primary">Open SVG
+    <input type="file" id="file" accept=".svg,image/svg+xml">
+  </label>
+  <span id="name">No file loaded</span>
+  <button id="zoomOut" title="Zoom out" disabled>−</button>
+  <button id="zoomIn" title="Zoom in" disabled>+</button>
+  <button id="reset" title="Reset zoom" disabled>Reset</button>
+  <button id="bg" title="Toggle checkerboard background" disabled>Background</button>
+</header>
+<div id="err" role="alert"></div>
+<main id="stage">
+  <div id="hint">Choose an SVG file, or drop one here.</div>
+  <div id="view"></div>
+</main>
+
+<script>
+(function () {
+  const fileInput = document.getElementById('file');
+  const stage = document.getElementById('stage');
+  const view = document.getElementById('view');
+  const hint = document.getElementById('hint');
+  const nameEl = document.getElementById('name');
+  const errEl = document.getElementById('err');
+  const btns = ['zoomIn', 'zoomOut', 'reset', 'bg'].map(id => document.getElementById(id));
+  let zoom = 1, currentUrl = null;
+
+  function setZoom(z) {
+    zoom = Math.min(10, Math.max(0.1, z));
+    view.style.transform = 'scale(' + zoom + ')';
+  }
+
+  function load(file) {
+    errEl.textContent = '';
+    if (!file) return;
+    if (file.type !== 'image/svg+xml' && !/\.svg$/i.test(file.name)) {
+      errEl.textContent = 'That is not an SVG file.';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onerror = () => { errEl.textContent = 'Could not read the file.'; };
+    reader.onload = () => {
+      const text = reader.result;
+      const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+      if (doc.querySelector('parsererror') || doc.documentElement.nodeName.toLowerCase() !== 'svg') {
+        errEl.textContent = 'The file is not valid SVG.';
+        return;
+      }
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+      // Rendering via <img> keeps any scripts in the SVG from running.
+      currentUrl = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }));
+      const img = new Image();
+      img.alt = file.name;
+      img.src = currentUrl;
+      view.replaceChildren(img);
+      hint.style.display = 'none';
+      nameEl.textContent = file.name;
+      btns.forEach(b => b.disabled = false);
+      setZoom(1);
+    };
+    reader.readAsText(file);
+  }
+
+  fileInput.addEventListener('change', e => load(e.target.files[0]));
+
+  ['dragenter', 'dragover'].forEach(t => stage.addEventListener(t, e => {
+    e.preventDefault(); stage.classList.add('drag');
+  }));
+  ['dragleave', 'drop'].forEach(t => stage.addEventListener(t, e => {
+    e.preventDefault(); stage.classList.remove('drag');
+  }));
+  stage.addEventListener('drop', e => load(e.dataTransfer.files[0]));
+
+  document.getElementById('zoomIn').onclick = () => setZoom(zoom * 1.25);
+  document.getElementById('zoomOut').onclick = () => setZoom(zoom / 1.25);
+  document.getElementById('reset').onclick = () => setZoom(1);
+  document.getElementById('bg').onclick = () => stage.classList.toggle('checker');
+})();
+</script>
+</body>
+</html>
