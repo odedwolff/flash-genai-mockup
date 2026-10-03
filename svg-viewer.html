@@ -35,6 +35,9 @@
   #view { transform-origin: center; }
   #view img { display: none; max-width: 100%; max-height: 100%; }
   #view img.cur { display: block; }
+  [hidden] { display: none !important; }
+  body.editing .bar.bottom { pointer-events: none; opacity: .4; }
+  input[type=color] { width: 34px; height: 26px; padding: 0; border: 1px solid var(--line); border-radius: 4px; background: none; vertical-align: middle; }
 </style>
 </head>
 <body>
@@ -47,6 +50,23 @@
     <button id="zoomIn" title="Zoom in" disabled>+</button>
     <button id="zoomReset" title="Reset zoom" disabled>100%</button>
     <button id="bg" title="Toggle checkerboard background" disabled>Background</button>
+    <button id="edit" title="Pause and edit this frame" disabled>✎ Edit frame</button>
+  </div>
+</div>
+<div class="bar" id="editbar" hidden>
+  <span id="ename" class="grow"></span>
+  <div class="grp">
+    <button id="addpt" title="Split the selected point's segment in two">Add point</button>
+    <button id="delpt" title="Delete selected point (Del)">Delete point</button>
+    <button id="conv" title="Toggle selected segment between line and curve">Line ↔ Curve</button>
+    <label>Fill <input type="color" id="fillc"></label>
+    <label>Stroke <input type="color" id="strokec"></label>
+    <button id="undo" title="Undo (Ctrl+Z)">Undo</button>
+  </div>
+  <div class="grp">
+    <button id="esave">Save SVG…</button>
+    <button id="eapply" class="on">Apply to frame</button>
+    <button id="ecancel" title="Discard changes (Esc)">Cancel</button>
   </div>
 </div>
 <div id="msg" role="status"></div>
@@ -78,7 +98,7 @@
   const $ = id => document.getElementById(id);
   const stage = $('stage'), view = $('view'), hint = $('hint'), msg = $('msg');
   const ctrl = ['first','prev','play','next','last','stop','loop','scrub','fpsRange','fps'].map($);
-  const zoomBtns = ['zoomIn','zoomOut','zoomReset','bg'].map($);
+  const zoomBtns = ['zoomIn','zoomOut','zoomReset','bg','edit'].map($);
 
   let frames = [];      // { name, url, img }
   let idx = 0, playing = false, looping = true;
@@ -140,6 +160,7 @@
 
   async function load(fileList) {
     setPlaying(false);
+    if (editing) await exitEdit(false);
     const files = Array.from(fileList).filter(isSvg);
     if (!files.length) { say('No SVG files found.', true); return; }
     // Sort by file name (natural order: frame2 before frame10), then by path.
@@ -157,7 +178,7 @@
         const url = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' }));
         const img = new Image(); img.alt = f.name; img.src = url;
         try { await img.decode(); } catch (e) {}
-        loaded.push({ name: f.name, url, img });
+        loaded.push({ name: f.name, url, img, text });
       } catch (e) { skipped.push(f.name); }
     }
     if (!loaded.length) { say('None of the files are valid SVG.', true); return; }
@@ -202,13 +223,228 @@
   $('bg').onclick = () => stage.classList.toggle('checker');
 
   document.addEventListener('keydown', e => {
-    if (frames.length < 2 || /^(INPUT|BUTTON)$/.test(e.target.tagName) && e.target.type !== 'range' && e.key === ' ') return;
+    if (editing || frames.length < 2 || /^(INPUT|BUTTON)$/.test(e.target.tagName) && e.target.type !== 'range' && e.key === ' ') return;
     if (e.target.tagName === 'INPUT' && e.target.type === 'number') return;
     if (e.key === ' ') { e.preventDefault(); $('play').click(); }
     else if (e.key === 'ArrowLeft' && e.target.type !== 'range') $('prev').click();
     else if (e.key === 'ArrowRight' && e.target.type !== 'range') $('next').click();
     else if (e.key === 'Home' && e.target.type !== 'range') $('first').click();
     else if (e.key === 'End' && e.target.type !== 'range') $('last').click();
+  });
+  // ---------- frame editor ----------
+  const NS = 'http://www.w3.org/2000/svg';
+  let editing = false, esvg = null, hg = null, selEl = null, segs = [], selSeg = -1, drag = null, hist = [], orig = {};
+  const ARGS = { M:2, L:2, H:1, V:1, C:6, S:4, Q:4, T:2, A:7, Z:0 };
+  const r3 = v => +v.toFixed(3);
+  const mid = (a, b) => [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+  const slots = s => ({ M:[0], L:[0], C:[0,2,4], Q:[0,2], A:[5] })[s.c] || [];
+  const toD = () => segs.map(s => s.c + s.p.map(r3).join(' ')).join(' ');
+  const endPt = i => { const s = segs[i]; if (s.c === 'Z') { for (let j = i; j >= 0; j--) if (segs[j].c === 'M') return segs[j].p; } return s.p.slice(-2); };
+
+  // Parse path data into absolute M/L/C/Q/A/Z segments (H,V,S,T and relative commands are converted).
+  function parsePath(d) {
+    const t = d.match(/[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g) || [];
+    const out = []; let i = 0, cmd = '', cx = 0, cy = 0, sx = 0, sy = 0, lc = null, lq = null;
+    while (i < t.length) {
+      if (/[a-zA-Z]/.test(t[i])) cmd = t[i++]; else if (!cmd) break;
+      const up = cmd.toUpperCase(), rel = cmd !== up, n = ARGS[up];
+      if (n === undefined) break;
+      if (up === 'Z') { out.push({ c: 'Z', p: [] }); cx = sx; cy = sy; lc = lq = null; cmd = ''; continue; }
+      const a = t.slice(i, i + n).map(Number); i += n;
+      if (a.length < n || a.some(isNaN)) break;
+      const ox = rel ? cx : 0, oy = rel ? cy : 0; let s;
+      if (up === 'M') { s = { c:'M', p:[a[0]+ox, a[1]+oy] }; sx = s.p[0]; sy = s.p[1]; cmd = rel ? 'l' : 'L'; }
+      else if (up === 'L') s = { c:'L', p:[a[0]+ox, a[1]+oy] };
+      else if (up === 'H') s = { c:'L', p:[a[0]+ox, cy] };
+      else if (up === 'V') s = { c:'L', p:[cx, a[0]+oy] };
+      else if (up === 'C') s = { c:'C', p:[a[0]+ox,a[1]+oy,a[2]+ox,a[3]+oy,a[4]+ox,a[5]+oy] };
+      else if (up === 'S') s = { c:'C', p:[...(lc ? [2*cx-lc[0], 2*cy-lc[1]] : [cx, cy]), a[0]+ox,a[1]+oy,a[2]+ox,a[3]+oy] };
+      else if (up === 'Q') s = { c:'Q', p:[a[0]+ox,a[1]+oy,a[2]+ox,a[3]+oy] };
+      else if (up === 'T') s = { c:'Q', p:[...(lq ? [2*cx-lq[0], 2*cy-lq[1]] : [cx, cy]), a[0]+ox, a[1]+oy] };
+      else s = { c:'A', p:[a[0],a[1],a[2],a[3],a[4],a[5]+ox,a[6]+oy] };
+      const p = s.p;
+      lc = s.c === 'C' ? [p[2], p[3]] : null; lq = s.c === 'Q' ? [p[0], p[1]] : null;
+      cx = p[p.length-2]; cy = p[p.length-1];
+      out.push(s);
+    }
+    return out[0] && out[0].c === 'M' ? out : [];
+  }
+
+  const commit = () => selEl.setAttribute('d', toD());
+  const paths = () => Array.from(esvg.querySelectorAll('path'));
+  const snap = () => { hist.push(paths().map(p => [p.getAttribute('d'), p.style.fill, p.style.stroke])); if (hist.length > 60) hist.shift(); };
+  const local = e => new DOMPoint(e.clientX, e.clientY).matrixTransform(selEl.getScreenCTM().inverse());
+  const hex = c => { const m = (c || '').match(/\d+/g); return m && m.length >= 3 ? '#' + m.slice(0,3).map(v => (+v).toString(16).padStart(2,'0')).join('') : null; };
+
+  function syncColors() {
+    const cs = getComputedStyle(selEl);
+    $('fillc').value = hex(cs.fill) || '#000000'; $('strokec').value = hex(cs.stroke) || '#000000';
+  }
+
+  function render() {
+    hg.replaceChildren();
+    if (!selEl) return;
+    const sm = esvg.getScreenCTM(), m = sm.inverse().multiply(selEl.getScreenCTM()), sc = Math.hypot(sm.a, sm.b) || 1, r = 5 / sc;
+    const pt = (x, y) => { const q = new DOMPoint(x, y).matrixTransform(m); return [q.x, q.y]; };
+    const mk = (tag, at) => { const e = document.createElementNS(NS, tag); for (const k in at) e.setAttribute(k, at[k]); hg.appendChild(e); return e; };
+    const lines = [], dots = [];
+    segs.forEach((s, i) => {
+      const sl = slots(s), last = sl[sl.length - 1], prev = i ? pt(...endPt(i - 1)) : null;
+      const an = sl.length ? pt(s.p[last], s.p[last + 1]) : null;
+      sl.forEach((k, j) => {
+        const q = pt(s.p[k], s.p[k + 1]), ctl = k !== last;
+        if (ctl) (s.c === 'C' ? [j ? an : prev] : [prev, an]).forEach(t => t && lines.push([t, q]));
+        dots.push({ q, i, k, ctl });
+      });
+    });
+    lines.forEach(([a, b]) => mk('line', { x1:a[0], y1:a[1], x2:b[0], y2:b[1], stroke:'#f59e0b', 'stroke-width':1/sc }));
+    dots.forEach(d => {
+      const sel = d.i === selSeg && !d.ctl;
+      const e = d.ctl ? mk('circle', { cx:d.q[0], cy:d.q[1], r, fill:'#f59e0b' })
+                      : mk('rect', { x:d.q[0]-r, y:d.q[1]-r, width:2*r, height:2*r, fill: sel ? '#2563eb' : '#fff' });
+      e.setAttribute('stroke', '#2563eb'); e.setAttribute('stroke-width', 1.5 / sc);
+      e.style.cursor = 'move'; e.dataset.i = d.i; e.dataset.k = d.k;
+    });
+  }
+
+  function select(p) {
+    selEl = p; selSeg = -1; segs = p ? parsePath(p.getAttribute('d') || '') : [];
+    if (p) syncColors();
+    render();
+  }
+
+  function down(e) {
+    e.preventDefault();
+    const h = e.target.closest('[data-k]');
+    if (h) {
+      snap(); selSeg = +h.dataset.i;
+      drag = { i: selSeg, k: +h.dataset.k, last: local(e) };
+      esvg.setPointerCapture(e.pointerId); render(); return;
+    }
+    const p = e.target.closest('path');
+    select(p && !hg.contains(p) ? p : null);
+  }
+
+  function move(e) {
+    if (!drag) return;
+    const q = local(e), dx = q.x - drag.last.x, dy = q.y - drag.last.y; drag.last = q;
+    const s = segs[drag.i], sh = (t, k) => { t.p[k] += dx; t.p[k + 1] += dy; };
+    sh(s, drag.k);
+    const sl = slots(s);
+    if (drag.k === sl[sl.length - 1]) {      // moving an anchor drags its neighbouring handles along
+      if (s.c === 'C') sh(s, 2);
+      const nx = segs[drag.i + 1]; if (nx && nx.c === 'C') sh(nx, 0);
+    }
+    commit(); render();
+  }
+
+  function undo() {
+    const h = hist.pop(); if (!h) return;
+    paths().forEach((p, i) => { p.setAttribute('d', h[i][0]); p.style.fill = h[i][1]; p.style.stroke = h[i][2]; });
+    selSeg = -1; segs = selEl ? parsePath(selEl.getAttribute('d')) : []; render();
+  }
+
+  const ok = () => selEl && selSeg > 0 && segs[selSeg] && !['Z', 'A'].includes(segs[selSeg].c);
+
+  $('addpt').onclick = () => {   // split the selected point's segment at its midpoint
+    if (!ok()) return;
+    snap();
+    const i = selSeg, s = segs[i], P0 = endPt(i - 1), p = s.p; let a, b;
+    if (s.c === 'L') { a = { c:'L', p:mid(P0, p) }; b = { c:'L', p:[...p] }; }
+    else if (s.c === 'Q') { const A = mid(P0, p.slice(0,2)), B = mid(p.slice(0,2), p.slice(2)), M = mid(A, B); a = { c:'Q', p:[...A, ...M] }; b = { c:'Q', p:[...B, ...p.slice(2)] }; }
+    else { const P1 = p.slice(0,2), P2 = p.slice(2,4), P3 = p.slice(4), A = mid(P0,P1), B = mid(P1,P2), C = mid(P2,P3), D = mid(A,B), E = mid(B,C), M = mid(D,E);
+           a = { c:'C', p:[...A, ...D, ...M] }; b = { c:'C', p:[...E, ...C, ...P3] }; }
+    segs.splice(i, 1, a, b); commit(); render();
+  };
+  $('delpt').onclick = () => {
+    if (!selEl || selSeg < 1 || !segs[selSeg] || segs[selSeg].c === 'Z') return;
+    snap(); segs.splice(selSeg, 1); selSeg = -1; commit(); render();
+  };
+  $('conv').onclick = () => {    // line <-> cubic curve
+    if (!ok()) return;
+    snap();
+    const i = selSeg, s = segs[i], e = s.p.slice(-2);
+    if (s.c === 'L') { const P = endPt(i - 1), dx = e[0] - P[0], dy = e[1] - P[1]; s.c = 'C'; s.p = [P[0]+dx/3, P[1]+dy/3, P[0]+2*dx/3, P[1]+2*dy/3, ...e]; }
+    else { s.c = 'L'; s.p = e; }
+    commit(); render();
+  };
+  $('undo').onclick = undo;
+  $('fillc').onchange = e => { if (selEl) { snap(); selEl.style.fill = e.target.value; } };
+  $('strokec').onchange = e => { if (selEl) { snap(); selEl.style.stroke = e.target.value; } };
+
+  function serialize() {
+    const c = esvg.cloneNode(true); c.querySelector('#__h').remove();
+    orig.w == null ? c.removeAttribute('width') : c.setAttribute('width', orig.w);
+    orig.h == null ? c.removeAttribute('height') : c.setAttribute('height', orig.h);
+    orig.vb == null ? c.removeAttribute('viewBox') : c.setAttribute('viewBox', orig.vb);
+    ['display', 'width', 'max-height', 'touch-action'].forEach(k => c.style.removeProperty(k));
+    if (!c.getAttribute('style')) c.removeAttribute('style');
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(c);
+  }
+
+  function enterEdit() {
+    if (editing || !frames.length) return;
+    setPlaying(false);
+    const fr = frames[idx], doc = new DOMParser().parseFromString(fr.text, 'image/svg+xml');
+    esvg = document.importNode(doc.documentElement, true);
+    esvg.querySelectorAll('script,foreignObject').forEach(n => n.remove());
+    [esvg, ...esvg.querySelectorAll('*')].forEach(n => { for (const a of [...n.attributes]) if (/^on/i.test(a.name)) n.removeAttribute(a.name); });
+    esvg.querySelectorAll('polygon,polyline').forEach(n => {   // make them editable as paths
+      const p = document.createElementNS(NS, 'path');
+      for (const a of n.attributes) if (a.name !== 'points') p.setAttribute(a.name, a.value);
+      const v = (n.getAttribute('points') || '').match(/-?[\d.]+(?:e-?\d+)?/gi) || []; let d = '';
+      for (let k = 0; k + 1 < v.length; k += 2) d += (k ? 'L' : 'M') + v[k] + ' ' + v[k + 1];
+      p.setAttribute('d', d + (n.tagName === 'polygon' ? 'Z' : '')); n.replaceWith(p);
+    });
+    orig = { w: esvg.getAttribute('width'), h: esvg.getAttribute('height'), vb: esvg.getAttribute('viewBox') };
+    const w = fr.img.clientWidth;
+    if (!orig.vb) esvg.setAttribute('viewBox', '0 0 ' + fr.img.naturalWidth + ' ' + fr.img.naturalHeight);
+    esvg.removeAttribute('width'); esvg.removeAttribute('height');
+    Object.assign(esvg.style, { display: 'block', width: w + 'px', maxHeight: '100%', touchAction: 'none' });
+    hg = document.createElementNS(NS, 'g'); hg.id = '__h'; esvg.appendChild(hg);
+    fr.img.classList.remove('cur'); view.appendChild(esvg);
+    editing = true; hist = []; selEl = null; segs = []; selSeg = -1;
+    document.body.classList.add('editing'); $('editbar').hidden = false;
+    $('ename').textContent = 'Editing ' + fr.name + ' — click a path, then drag its points.';
+    esvg.addEventListener('pointerdown', down);
+    esvg.addEventListener('pointermove', move);
+    esvg.addEventListener('pointerup', () => { drag = null; });
+  }
+
+  async function exitEdit(apply) {
+    if (!editing) return;
+    const fr = frames[idx];
+    if (apply) {
+      fr.text = serialize();
+      const url = URL.createObjectURL(new Blob([fr.text], { type: 'image/svg+xml' }));
+      fr.img.src = url; URL.revokeObjectURL(fr.url); fr.url = url;
+      try { await fr.img.decode(); } catch (e) {}
+    }
+    esvg.remove(); esvg = hg = selEl = null; editing = false;
+    fr.img.classList.add('cur');
+    document.body.classList.remove('editing'); $('editbar').hidden = true;
+  }
+
+  $('edit').onclick = enterEdit;
+  $('eapply').onclick = () => exitEdit(true);
+  $('ecancel').onclick = () => exitEdit(false);
+  $('esave').onclick = async () => {
+    const text = serialize(), name = frames[idx].name;
+    if (window.showSaveFilePicker) {   // Chromium: pick the original file to overwrite it
+      try {
+        const h = await showSaveFilePicker({ suggestedName: name, types: [{ accept: { 'image/svg+xml': ['.svg'] } }] });
+        const w = await h.createWritable(); await w.write(text); await w.close(); return;
+      } catch (e) { if (e.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'image/svg+xml' })); a.download = name; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  document.addEventListener('keydown', e => {
+    if (!editing) return;
+    if (e.key === 'Delete') $('delpt').click();
+    else if (e.key === 'Escape') exitEdit(false);
+    else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); undo(); }
   });
 })();
 </script>
